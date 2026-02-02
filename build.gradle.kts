@@ -35,14 +35,14 @@ dependencies {
 
 	// R2DBC + Postgres
 	implementation("org.springframework.boot:spring-boot-starter-data-r2dbc")
-	runtimeOnly("org.postgresql:r2dbc-postgresql")
+	implementation("org.postgresql:r2dbc-postgresql")
 
 	// Coroutines bridge for Reactor/WebFlux
 	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
 	implementation("io.projectreactor.kotlin:reactor-kotlin-extensions")
 
 	// Kotlin goodies
-	implementation("tools.jackson.module:jackson-module-kotlin")
+	implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 
 	testImplementation("org.springframework.boot:spring-boot-starter-actuator-test")

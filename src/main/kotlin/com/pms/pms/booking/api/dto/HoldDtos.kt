@@ -1,4 +1,4 @@
-package com.pms.pms.api.v1.reservations.dto
+package com.pms.pms.booking.api.dto
 
 import com.fasterxml.jackson.annotation.JsonIgnore
 import io.swagger.v3.oas.annotations.media.Schema
@@ -28,6 +28,7 @@ data class CreateHoldRequest(
     @field:Schema(type = "string", format = "date-time", example = "2026-02-03T10:00:00Z")
     val checkOut: OffsetDateTime,
 ) {
+    @Suppress("unused")
     @get:AssertTrue(message = "checkOut must be after checkIn")
     @get:JsonIgnore
     val isStayRangeValid: Boolean

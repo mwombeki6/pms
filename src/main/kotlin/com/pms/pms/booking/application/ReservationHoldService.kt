@@ -1,11 +1,11 @@
 package com.pms.pms.booking.application
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.pms.pms.api.v1.reservations.dto.CreateHoldRequest
-import com.pms.pms.api.v1.reservations.dto.CreateHoldResponse
+import com.pms.pms.booking.api.dto.CreateHoldRequest
+import com.pms.pms.booking.api.dto.CreateHoldResponse
 import com.pms.pms.shared.errors.IdempotencyKeyConflictException
-import com.pms.pms.shared.errors.InvalidRequestException
 import com.pms.pms.shared.errors.NoAvailabilityException
+import com.pms.pms.shared.utils.parseUuidOrThrow
 import io.r2dbc.postgresql.codec.Json
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -42,7 +42,7 @@ class ReservationHoldService(
             return existing.response
         }
 
-        val hotelId = parseUuid(req.hotelId, "hotelId")
+        val hotelId = parseUuidOrThrow(req.hotelId, "hotelId")
         val roomId = findAvailableRoom(hotelId, req.checkIn, req.checkOut)
             ?: throw NoAvailabilityException("No availability for requested stay range.")
 
@@ -58,7 +58,7 @@ class ReservationHoldService(
 
         try {
             insertIdempotencyRecord(idemKey, requestHash, response)
-        } catch (ex: DataIntegrityViolationException) {
+        } catch (_ex: DataIntegrityViolationException) {
             val afterConflict = findIdempotencyRecord(idemKey)
             if (afterConflict != null && afterConflict.requestHash == requestHash) {
                 return afterConflict.response
@@ -93,7 +93,7 @@ class ReservationHoldService(
             .bind("hotelId", hotelId)
             .bind("checkIn", checkIn)
             .bind("checkOut", checkOut)
-            .map { row, _ -> row.get("id", UUID::class.java) }
+            .map { row, _ -> row.get("id", UUID::class.java)!! }
             .one()
             .awaitSingleOrNull()
     }
@@ -193,13 +193,6 @@ class ReservationHoldService(
             .digest(payload.toByteArray(StandardCharsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) }
     }
-
-    private fun parseUuid(value: String, field: String): UUID =
-        try {
-            UUID.fromString(value)
-        } catch (ex: IllegalArgumentException) {
-            throw InvalidRequestException("$field must be a valid UUID")
-        }
 
     private fun readJson(value: Any?): String =
         when (value) {
