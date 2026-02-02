@@ -28,6 +28,7 @@ data class CreateHoldRequest(
     @field:Schema(type = "string", format = "date-time", example = "2026-02-03T10:00:00Z")
     val checkOut: OffsetDateTime,
 ) {
+    @Suppress("unused")
     @get:AssertTrue(message = "checkOut must be after checkIn")
     @get:JsonIgnore
     val isStayRangeValid: Boolean

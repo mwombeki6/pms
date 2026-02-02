@@ -58,7 +58,7 @@ class ReservationHoldService(
 
         try {
             insertIdempotencyRecord(idemKey, requestHash, response)
-        } catch (ex: DataIntegrityViolationException) {
+        } catch (_ex: DataIntegrityViolationException) {
             val afterConflict = findIdempotencyRecord(idemKey)
             if (afterConflict != null && afterConflict.requestHash == requestHash) {
                 return afterConflict.response
@@ -194,10 +194,11 @@ class ReservationHoldService(
         return digest.joinToString("") { "%02x".format(it) }
     }
 
+    @Suppress("SameParameterValue")
     private fun parseUuid(value: String, field: String): UUID =
         try {
             UUID.fromString(value)
-        } catch (ex: IllegalArgumentException) {
+        } catch (_ex: IllegalArgumentException) {
             throw InvalidRequestException("$field must be a valid UUID")
         }
 
