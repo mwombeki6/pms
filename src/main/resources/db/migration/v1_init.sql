@@ -1,4 +1,5 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 CREATE TABLE rooms (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -13,11 +14,11 @@ CREATE TABLE reservation_holds (
     room_id UUID NOT NULL REFERENCES rooms(id),
     guest_name TEXT NOT NULL,
     guest_phone TEXT NOT NULL,
-    stay_range TSRANGE NOT NULL,
+    stay_range TSTZRANGE NOT NULL,
     status TEXT NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)
+);
 
 ALTER TABLE reservation_holds
     ADD CONSTRAINT no_overlapping_holds

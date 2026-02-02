@@ -8,10 +8,12 @@ import io.swagger.v3.oas.annotations.Parameter
 import io.swagger.v3.oas.annotations.media.Schema
 import io.swagger.v3.oas.annotations.responses.ApiResponse
 import jakarta.validation.Valid
+import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 
 @RestController
@@ -24,10 +26,12 @@ class ReservationHoldController (
         description = "Create a new temporary reservation hold to prevent double-booking while payment is in progress",
         responses = [
             ApiResponse(responseCode = "201", description = "Hold created Successfully"),
-            ApiResponse(responseCode = "400", description = "Reserve not found")
+            ApiResponse(responseCode = "400", description = "Invalid request"),
+            ApiResponse(responseCode = "409", description = "No availability or idempotency conflict")
         ]
     )
     @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
     suspend fun createHold(
         @Parameter(
             required = true,
