@@ -14,12 +14,12 @@ spring:
     locations: classpath:db/migration
     enabled: true
 
-  springdoc:
-    api-docs:
-      path: /v3/api-docs
+springdoc:
+  api-docs:
+    path: /v3/api-docs
 
-  management:
-    endpoints:
-      web:
-        exposure:
-          include: health,info,metrics
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

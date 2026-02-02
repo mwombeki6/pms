@@ -2,6 +2,7 @@ package com.pms.pms.api.v1.reservations
 
 import com.pms.pms.api.v1.reservations.dto.CreateHoldRequest
 import com.pms.pms.api.v1.reservations.dto.CreateHoldResponse
+import com.pms.pms.booking.application.ReservationHoldService
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.Parameter
 import io.swagger.v3.oas.annotations.media.Schema
