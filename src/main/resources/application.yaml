@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: pms
+
+  r2dbc:
+    url: ${R2DBC_URL:r2dbc:postgresql://localhost:5432/pms}
+    username: ${DB_USER:pms}
+    password: ${DB_PASS:pms}
+
+  flyway:
+    url: ${JDBC_URL:jdbc:postgresql://localhost:5432/pms}
+    user: ${DB_USER:pms}
+    password: ${DB_PASS:pms}
+    locations: classpath:db/migration
+    enabled: true
+
+  springdoc:
+    api-docs:
+      path: /v3/api-docs
+
+  management:
+    endpoints:
+      web:
+        exposure:
+          include: health,info,metrics
