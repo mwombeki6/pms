@@ -3,21 +3,29 @@ spring:
     name: pms
 
   r2dbc:
-    url: ${R2DBC_URL:r2dbc:postgresql://localhost:5432/pms}
+    url: ${R2DBC_URL:r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:pms}}
     username: ${DB_USER:pms}
     password: ${DB_PASS:pms}
     pool:
       enabled: true
-      initial-size: 5
-      max-size: 20
-      max-idle-time: 30m
+      initial-size: ${DB_POOL_INITIAL_SIZE:5}
+      max-size: ${DB_POOL_MAX_SIZE:20}
+      max-idle-time: ${DB_POOL_MAX_IDLE:30m}
 
   flyway:
-    url: ${JDBC_URL:jdbc:postgresql://localhost:5432/pms}
+    url: ${JDBC_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:pms}}
     user: ${DB_USER:pms}
     password: ${DB_PASS:pms}
     locations: classpath:db/migration
     enabled: true
+
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+booking:
+  holds:
+    ttl-minutes: ${HOLD_TTL_MINUTES:15}
+    expire-interval-ms: ${HOLD_EXPIRE_INTERVAL_MS:60000}
 
 springdoc:
   api-docs:
@@ -31,7 +39,3 @@ management:
 
 server:
   shutdown: graceful
-
-spring:
-  lifecycle:
-    timeout-per-shutdown-phase: 30s

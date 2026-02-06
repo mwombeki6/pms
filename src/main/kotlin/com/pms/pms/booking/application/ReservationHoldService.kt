@@ -3,6 +3,7 @@ package com.pms.pms.booking.application
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.pms.pms.booking.api.dto.CreateHoldRequest
 import com.pms.pms.booking.api.dto.CreateHoldResponse
+import com.pms.pms.booking.domain.ReservationHoldStatus
 import com.pms.pms.shared.errors.IdempotencyKeyConflictException
 import com.pms.pms.shared.errors.NoAvailabilityException
 import com.pms.pms.shared.utils.parseUuidOrThrow
@@ -12,7 +13,6 @@ import java.security.MessageDigest
 import java.time.Clock
 import java.time.OffsetDateTime
 import java.util.UUID
-import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.r2dbc.core.DatabaseClient
@@ -23,19 +23,17 @@ import org.springframework.transaction.annotation.Transactional
 class ReservationHoldService(
     private val databaseClient: DatabaseClient,
     private val objectMapper: ObjectMapper,
-    private val clock: Clock = Clock.systemUTC()
+    private val clock: Clock = Clock.systemUTC(),
+    private val holdProperties: BookingHoldProperties,
+    private val holdMaintenance: ReservationHoldMaintenance
 ) {
     companion object {
         private const val IDEM_SCOPE = "reservation-hold:create"
-        private const val HOLD_MINUTES: Long = 15
-        private const val STATUS_HOLD_CREATED = "HOLD_CREATED"
-        private const val STATUS_CONFIRMED = "CONFIRMED"
-        private const val STATUS_EXPIRED = "EXPIRED"
-        private val ACTIVE_STATUSES = listOf(STATUS_HOLD_CREATED, STATUS_CONFIRMED)
     }
 
     @Transactional
     suspend fun createHold(idemKey: String, req: CreateHoldRequest): CreateHoldResponse {
+        lockIdempotencyKey(idemKey)
         val requestHash = hashRequest(req)
         val existing = findIdempotencyRecord(idemKey)
         if (existing != null) {
@@ -47,9 +45,9 @@ class ReservationHoldService(
 
         val hotelId = parseUuidOrThrow(req.hotelId, "hotelId")
         val now = OffsetDateTime.now(clock)
-        expireHolds(now)
+        holdMaintenance.expireHolds(now)
 
-        val expiresAt = now.plusMinutes(HOLD_MINUTES)
+        val expiresAt = now.plusMinutes(holdProperties.ttlMinutes)
         val holdResult = try {
             insertHoldIfAvailable(hotelId, req, expiresAt, now)
         } catch (_ex: DataIntegrityViolationException) {
@@ -59,7 +57,7 @@ class ReservationHoldService(
         val response = CreateHoldResponse(
             holdId = holdResult.holdId.toString(),
             roomId = holdResult.roomId.toString(),
-            status = STATUS_HOLD_CREATED,
+            status = ReservationHoldStatus.HOLD_CREATED.name,
             expiresAt = expiresAt.toString()
         )
 
@@ -74,6 +72,17 @@ class ReservationHoldService(
         }
 
         return response
+    }
+
+    private suspend fun lockIdempotencyKey(idemKey: String) {
+        val sql = """
+            select pg_advisory_xact_lock(hashtextextended(:lockKey, 0))
+        """.trimIndent()
+
+        databaseClient.sql(sql)
+            .bind("lockKey", "$IDEM_SCOPE:$idemKey")
+            .then()
+            .awaitSingleOrNull()
     }
 
     private suspend fun insertHoldIfAvailable(
@@ -92,8 +101,10 @@ class ReservationHoldService(
                     select 1
                     from reservation_holds h
                     where h.room_id = r.id
-                      and h.status in (${ACTIVE_STATUSES.joinToString(",") { "'$it'" }})
-                      and h.expires_at > :now
+                      and (
+                        (h.status = :holdStatus and h.expires_at > :now)
+                        or h.status = :confirmedStatus
+                      )
                       and h.stay_range && tstzrange(:checkIn, :checkOut, '[)')
                   )
                 order by r.id
@@ -127,9 +138,11 @@ class ReservationHoldService(
             .bind("guestPhone", req.guestPhone)
             .bind("checkIn", req.checkIn)
             .bind("checkOut", req.checkOut)
-            .bind("status", STATUS_HOLD_CREATED)
+            .bind("status", ReservationHoldStatus.HOLD_CREATED.name)
             .bind("expiresAt", expiresAt)
             .bind("now", now)
+            .bind("holdStatus", ReservationHoldStatus.HOLD_CREATED.name)
+            .bind("confirmedStatus", ReservationHoldStatus.CONFIRMED.name)
             .map { row, _ ->
                 HoldInsertResult(
                     holdId = row.get("id", UUID::class.java)!!,
@@ -137,23 +150,6 @@ class ReservationHoldService(
                 )
             }
             .one()
-            .awaitSingleOrNull()
-    }
-
-    private suspend fun expireHolds(now: OffsetDateTime) {
-        val sql = """
-            update reservation_holds
-            set status = :expiredStatus
-            where status = :activeStatus
-              and expires_at <= :now
-        """.trimIndent()
-
-        databaseClient.sql(sql)
-            .bind("expiredStatus", STATUS_EXPIRED)
-            .bind("activeStatus", STATUS_HOLD_CREATED)
-            .bind("now", now)
-            .fetch()
-            .rowsUpdated()
             .awaitSingleOrNull()
     }
 
