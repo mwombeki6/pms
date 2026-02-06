@@ -1,11 +1,11 @@
 package com.pms.pms.booking.application
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.pms.pms.api.v1.reservations.dto.CreateHoldRequest
-import com.pms.pms.api.v1.reservations.dto.CreateHoldResponse
+import com.pms.pms.booking.api.dto.CreateHoldRequest
+import com.pms.pms.booking.api.dto.CreateHoldResponse
 import com.pms.pms.shared.errors.IdempotencyKeyConflictException
-import com.pms.pms.shared.errors.InvalidRequestException
 import com.pms.pms.shared.errors.NoAvailabilityException
+import com.pms.pms.shared.utils.parseUuidOrThrow
 import io.r2dbc.postgresql.codec.Json
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -28,7 +28,10 @@ class ReservationHoldService(
     companion object {
         private const val IDEM_SCOPE = "reservation-hold:create"
         private const val HOLD_MINUTES: Long = 15
-        private val ACTIVE_STATUSES = listOf("HOLD_CREATED", "CONFIRMED")
+        private const val STATUS_HOLD_CREATED = "HOLD_CREATED"
+        private const val STATUS_CONFIRMED = "CONFIRMED"
+        private const val STATUS_EXPIRED = "EXPIRED"
+        private val ACTIVE_STATUSES = listOf(STATUS_HOLD_CREATED, STATUS_CONFIRMED)
     }
 
     @Transactional
@@ -42,17 +45,21 @@ class ReservationHoldService(
             return existing.response
         }
 
-        val hotelId = parseUuid(req.hotelId, "hotelId")
-        val roomId = findAvailableRoom(hotelId, req.checkIn, req.checkOut)
-            ?: throw NoAvailabilityException("No availability for requested stay range.")
+        val hotelId = parseUuidOrThrow(req.hotelId, "hotelId")
+        val now = OffsetDateTime.now(clock)
+        expireHolds(now)
 
-        val expiresAt = OffsetDateTime.now(clock).plusMinutes(HOLD_MINUTES)
-        val holdId = insertHold(hotelId, roomId, req, expiresAt)
+        val expiresAt = now.plusMinutes(HOLD_MINUTES)
+        val holdResult = try {
+            insertHoldIfAvailable(hotelId, req, expiresAt, now)
+        } catch (_ex: DataIntegrityViolationException) {
+            null
+        } ?: throw NoAvailabilityException("No availability for requested stay range.")
 
         val response = CreateHoldResponse(
-            holdId = holdId.toString(),
-            roomId = roomId.toString(),
-            status = "HOLD_CREATED",
+            holdId = holdResult.holdId.toString(),
+            roomId = holdResult.roomId.toString(),
+            status = STATUS_HOLD_CREATED,
             expiresAt = expiresAt.toString()
         )
 
@@ -69,42 +76,30 @@ class ReservationHoldService(
         return response
     }
 
-    private suspend fun findAvailableRoom(
+    private suspend fun insertHoldIfAvailable(
         hotelId: UUID,
-        checkIn: OffsetDateTime,
-        checkOut: OffsetDateTime
-    ): UUID? {
-        val sql = """
-            select r.id
-            from rooms r
-            where r.hotel_id = :hotelId
-              and r.is_active = true
-              and not exists (
-                select 1
-                from reservation_holds h
-                where h.room_id = r.id
-                  and h.status in (${ACTIVE_STATUSES.joinToString(",") { "'$it'" }})
-                  and h.stay_range && tstzrange(:checkIn, :checkOut, '[)')
-              )
-            limit 1
-        """.trimIndent()
-
-        return databaseClient.sql(sql)
-            .bind("hotelId", hotelId)
-            .bind("checkIn", checkIn)
-            .bind("checkOut", checkOut)
-            .map { row, _ -> row.get("id", UUID::class.java) }
-            .one()
-            .awaitSingleOrNull()
-    }
-
-    private suspend fun insertHold(
-        hotelId: UUID,
-        roomId: UUID,
         req: CreateHoldRequest,
-        expiresAt: OffsetDateTime
-    ): UUID {
+        expiresAt: OffsetDateTime,
+        now: OffsetDateTime
+    ): HoldInsertResult? {
         val sql = """
+            with candidate as (
+                select r.id
+                from rooms r
+                where r.hotel_id = :hotelId
+                  and r.is_active = true
+                  and not exists (
+                    select 1
+                    from reservation_holds h
+                    where h.room_id = r.id
+                      and h.status in (${ACTIVE_STATUSES.joinToString(",") { "'$it'" }})
+                      and h.expires_at > :now
+                      and h.stay_range && tstzrange(:checkIn, :checkOut, '[)')
+                  )
+                order by r.id
+                for update skip locked
+                limit 1
+            )
             insert into reservation_holds (
                 hotel_id,
                 room_id,
@@ -114,30 +109,52 @@ class ReservationHoldService(
                 status,
                 expires_at
             )
-            values (
+            select
                 :hotelId,
-                :roomId,
+                candidate.id,
                 :guestName,
                 :guestPhone,
                 tstzrange(:checkIn, :checkOut, '[)'),
                 :status,
                 :expiresAt
-            )
-            returning id
+            from candidate
+            returning id, room_id
         """.trimIndent()
 
         return databaseClient.sql(sql)
             .bind("hotelId", hotelId)
-            .bind("roomId", roomId)
             .bind("guestName", req.guestName)
             .bind("guestPhone", req.guestPhone)
             .bind("checkIn", req.checkIn)
             .bind("checkOut", req.checkOut)
-            .bind("status", "HOLD_CREATED")
+            .bind("status", STATUS_HOLD_CREATED)
             .bind("expiresAt", expiresAt)
-            .map { row, _ -> row.get("id", UUID::class.java)!! }
+            .bind("now", now)
+            .map { row, _ ->
+                HoldInsertResult(
+                    holdId = row.get("id", UUID::class.java)!!,
+                    roomId = row.get("room_id", UUID::class.java)!!
+                )
+            }
             .one()
-            .awaitSingle()
+            .awaitSingleOrNull()
+    }
+
+    private suspend fun expireHolds(now: OffsetDateTime) {
+        val sql = """
+            update reservation_holds
+            set status = :expiredStatus
+            where status = :activeStatus
+              and expires_at <= :now
+        """.trimIndent()
+
+        databaseClient.sql(sql)
+            .bind("expiredStatus", STATUS_EXPIRED)
+            .bind("activeStatus", STATUS_HOLD_CREATED)
+            .bind("now", now)
+            .fetch()
+            .rowsUpdated()
+            .awaitSingleOrNull()
     }
 
     private suspend fun findIdempotencyRecord(idemKey: String): IdempotencyRecord? {
@@ -194,14 +211,6 @@ class ReservationHoldService(
         return digest.joinToString("") { "%02x".format(it) }
     }
 
-    @Suppress("SameParameterValue")
-    private fun parseUuid(value: String, field: String): UUID =
-        try {
-            UUID.fromString(value)
-        } catch (_ex: IllegalArgumentException) {
-            throw InvalidRequestException("$field must be a valid UUID")
-        }
-
     private fun readJson(value: Any?): String =
         when (value) {
             is Json -> value.asString()
@@ -213,5 +222,10 @@ class ReservationHoldService(
     private data class IdempotencyRecord(
         val requestHash: String,
         val response: CreateHoldResponse
+    )
+
+    private data class HoldInsertResult(
+        val holdId: UUID,
+        val roomId: UUID
     )
 }

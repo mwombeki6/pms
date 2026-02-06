@@ -6,6 +6,11 @@ spring:
     url: ${R2DBC_URL:r2dbc:postgresql://localhost:5432/pms}
     username: ${DB_USER:pms}
     password: ${DB_PASS:pms}
+    pool:
+      enabled: true
+      initial-size: 5
+      max-size: 20
+      max-idle-time: 30m
 
   flyway:
     url: ${JDBC_URL:jdbc:postgresql://localhost:5432/pms}
@@ -23,3 +28,10 @@ management:
     web:
       exposure:
         include: health,info,metrics
+
+server:
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s

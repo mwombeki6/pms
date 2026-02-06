@@ -36,6 +36,7 @@ dependencies {
 	// R2DBC + Postgres
 	implementation("org.springframework.boot:spring-boot-starter-data-r2dbc")
 	implementation("org.postgresql:r2dbc-postgresql")
+	implementation("io.r2dbc:r2dbc-pool")
 
 	// Coroutines bridge for Reactor/WebFlux
 	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
