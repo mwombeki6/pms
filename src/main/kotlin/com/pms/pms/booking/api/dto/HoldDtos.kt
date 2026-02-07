@@ -35,9 +35,11 @@ data class CreateHoldRequest(
         get() = checkOut.isAfter(checkIn)
 }
 
-data class CreateHoldResponse(
+data class HoldResponse(
     val holdId: String,
     val roomId: String,
     val status: String,
     val expiresAt: String,
 )
+
+typealias CreateHoldResponse = HoldResponse

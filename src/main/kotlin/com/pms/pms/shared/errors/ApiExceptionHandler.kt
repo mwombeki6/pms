@@ -23,4 +23,19 @@ class ApiExceptionHandler {
     fun invalidRequest(ex: InvalidRequestException): ResponseEntity<ApiError> =
         ResponseEntity.status(HttpStatus.BAD_REQUEST)
             .body(ApiError("INVALID_REQUEST", ex.message ?: "Bad request"))
+
+    @ExceptionHandler(HoldNotFoundException::class)
+    fun holdNotFound(ex: HoldNotFoundException): ResponseEntity<ApiError> =
+        ResponseEntity.status(HttpStatus.NOT_FOUND)
+            .body(ApiError("HOLD_NOT_FOUND", ex.message ?: "Not found"))
+
+    @ExceptionHandler(HoldExpiredException::class)
+    fun holdExpired(ex: HoldExpiredException): ResponseEntity<ApiError> =
+        ResponseEntity.status(HttpStatus.CONFLICT)
+            .body(ApiError("HOLD_EXPIRED", ex.message ?: "Conflict"))
+
+    @ExceptionHandler(HoldStatusConflictException::class)
+    fun holdStatusConflict(ex: HoldStatusConflictException): ResponseEntity<ApiError> =
+        ResponseEntity.status(HttpStatus.CONFLICT)
+            .body(ApiError("HOLD_STATUS_CONFLICT", ex.message ?: "Conflict"))
 }

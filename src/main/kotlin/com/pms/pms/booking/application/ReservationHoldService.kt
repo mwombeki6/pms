@@ -3,11 +3,16 @@ package com.pms.pms.booking.application
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.pms.pms.booking.api.dto.CreateHoldRequest
 import com.pms.pms.booking.api.dto.CreateHoldResponse
+import com.pms.pms.booking.api.dto.HoldResponse
 import com.pms.pms.booking.domain.ReservationHoldStatus
+import com.pms.pms.shared.errors.HoldExpiredException
+import com.pms.pms.shared.errors.HoldNotFoundException
+import com.pms.pms.shared.errors.HoldStatusConflictException
 import com.pms.pms.shared.errors.IdempotencyKeyConflictException
 import com.pms.pms.shared.errors.NoAvailabilityException
 import com.pms.pms.shared.utils.parseUuidOrThrow
 import io.r2dbc.postgresql.codec.Json
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Clock
@@ -74,13 +79,54 @@ class ReservationHoldService(
         return response
     }
 
+    @Transactional
+    suspend fun confirmHold(holdId: String): HoldResponse {
+        val holdUuid = parseUuidOrThrow(holdId, "holdId")
+        val now = OffsetDateTime.now(clock)
+        val hold = findHoldForUpdate(holdUuid) ?: throw HoldNotFoundException()
+
+        return when (hold.status) {
+            ReservationHoldStatus.HOLD_CREATED -> {
+                if (!hold.expiresAt.isAfter(now)) {
+                    markExpired(holdUuid, now)
+                    throw HoldExpiredException()
+                }
+                markConfirmed(holdUuid, now).toResponse()
+            }
+            ReservationHoldStatus.CONFIRMED -> hold.toResponse()
+            ReservationHoldStatus.CANCELLED ->
+                throw HoldStatusConflictException("Hold already cancelled")
+            ReservationHoldStatus.EXPIRED -> throw HoldExpiredException()
+        }
+    }
+
+    @Transactional
+    suspend fun cancelHold(holdId: String): HoldResponse {
+        val holdUuid = parseUuidOrThrow(holdId, "holdId")
+        val now = OffsetDateTime.now(clock)
+        val hold = findHoldForUpdate(holdUuid) ?: throw HoldNotFoundException()
+
+        return when (hold.status) {
+            ReservationHoldStatus.HOLD_CREATED -> {
+                if (!hold.expiresAt.isAfter(now)) {
+                    markExpired(holdUuid, now)
+                    throw HoldExpiredException()
+                }
+                markCancelled(holdUuid, now).toResponse()
+            }
+            ReservationHoldStatus.CONFIRMED -> markCancelled(holdUuid, now).toResponse()
+            ReservationHoldStatus.CANCELLED -> hold.toResponse()
+            ReservationHoldStatus.EXPIRED -> throw HoldExpiredException()
+        }
+    }
+
     private suspend fun lockIdempotencyKey(idemKey: String) {
         val sql = """
-            select pg_advisory_xact_lock(hashtextextended(:lockKey, 0))
+            select pg_advisory_xact_lock(:lockKey)
         """.trimIndent()
 
         databaseClient.sql(sql)
-            .bind("lockKey", "$IDEM_SCOPE:$idemKey")
+            .bind("lockKey", lockKey(idemKey))
             .then()
             .awaitSingleOrNull()
     }
@@ -166,7 +212,7 @@ class ReservationHoldService(
             .map { row, _ ->
                 val hash = row.get("request_hash", String::class.java) ?: ""
                 val responseJson = readJson(row.get("response_json"))
-                val response = objectMapper.readValue(responseJson, CreateHoldResponse::class.java)
+                val response = objectMapper.readValue(responseJson, HoldResponse::class.java)
                 IdempotencyRecord(hash, response)
             }
             .one()
@@ -207,6 +253,13 @@ class ReservationHoldService(
         return digest.joinToString("") { "%02x".format(it) }
     }
 
+    private fun lockKey(idemKey: String): Long {
+        val payload = "$IDEM_SCOPE:$idemKey"
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(payload.toByteArray(StandardCharsets.UTF_8))
+        return ByteBuffer.wrap(digest, 0, java.lang.Long.BYTES).long
+    }
+
     private fun readJson(value: Any?): String =
         when (value) {
             is Json -> value.asString()
@@ -215,9 +268,111 @@ class ReservationHoldService(
             else -> objectMapper.writeValueAsString(value)
         }
 
+    private suspend fun findHoldForUpdate(holdId: UUID): HoldSnapshot? {
+        val sql = """
+            select id, room_id, status, expires_at
+            from reservation_holds
+            where id = :holdId
+            for update
+        """.trimIndent()
+
+        return databaseClient.sql(sql)
+            .bind("holdId", holdId)
+            .map { row, _ ->
+                HoldSnapshot(
+                    holdId = row.get("id", UUID::class.java)!!,
+                    roomId = row.get("room_id", UUID::class.java)!!,
+                    status = statusFromDb(row.get("status", String::class.java) ?: ""),
+                    expiresAt = row.get("expires_at", OffsetDateTime::class.java)!!
+                )
+            }
+            .one()
+            .awaitSingleOrNull()
+    }
+
+    private suspend fun markConfirmed(holdId: UUID, now: OffsetDateTime): HoldSnapshot {
+        val sql = """
+            update reservation_holds
+            set status = :status,
+                confirmed_at = :now,
+                updated_at = :now
+            where id = :holdId
+            returning id, room_id, status, expires_at
+        """.trimIndent()
+
+        return updateHoldStatus(sql, holdId, now, ReservationHoldStatus.CONFIRMED)
+    }
+
+    private suspend fun markCancelled(holdId: UUID, now: OffsetDateTime): HoldSnapshot {
+        val sql = """
+            update reservation_holds
+            set status = :status,
+                cancelled_at = :now,
+                updated_at = :now
+            where id = :holdId
+            returning id, room_id, status, expires_at
+        """.trimIndent()
+
+        return updateHoldStatus(sql, holdId, now, ReservationHoldStatus.CANCELLED)
+    }
+
+    private suspend fun markExpired(holdId: UUID, now: OffsetDateTime): HoldSnapshot {
+        val sql = """
+            update reservation_holds
+            set status = :status,
+                expired_at = :now,
+                updated_at = :now
+            where id = :holdId
+            returning id, room_id, status, expires_at
+        """.trimIndent()
+
+        return updateHoldStatus(sql, holdId, now, ReservationHoldStatus.EXPIRED)
+    }
+
+    private suspend fun updateHoldStatus(
+        sql: String,
+        holdId: UUID,
+        now: OffsetDateTime,
+        status: ReservationHoldStatus
+    ): HoldSnapshot =
+        databaseClient.sql(sql)
+            .bind("holdId", holdId)
+            .bind("status", status.name)
+            .bind("now", now)
+            .map { row, _ ->
+                HoldSnapshot(
+                    holdId = row.get("id", UUID::class.java)!!,
+                    roomId = row.get("room_id", UUID::class.java)!!,
+                    status = statusFromDb(row.get("status", String::class.java) ?: ""),
+                    expiresAt = row.get("expires_at", OffsetDateTime::class.java)!!
+                )
+            }
+            .one()
+            .awaitSingleOrNull()
+            ?: throw HoldNotFoundException()
+
+    private fun statusFromDb(value: String): ReservationHoldStatus =
+        ReservationHoldStatus.entries.firstOrNull { it.name == value }
+            ?: throw IllegalStateException("Unknown hold status: $value")
+
+    private fun HoldSnapshot.toResponse(): HoldResponse =
+        HoldResponse(
+            holdId = holdId.toString(),
+            roomId = roomId.toString(),
+            status = status.name,
+            expiresAt = expiresAt.toString()
+        )
+
     private data class IdempotencyRecord(
         val requestHash: String,
-        val response: CreateHoldResponse
+        val response: HoldResponse
+    )
+
+    private data class HoldSnapshot(
+        val holdId: UUID,
+        val roomId: UUID,
+        val status: ReservationHoldStatus,
+        val expiresAt: OffsetDateTime
     )
 
     private data class HoldInsertResult(

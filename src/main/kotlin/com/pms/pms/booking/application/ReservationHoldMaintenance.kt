@@ -24,7 +24,9 @@ class ReservationHoldMaintenance(
     suspend fun expireHolds(now: OffsetDateTime) {
         val sql = """
             update reservation_holds
-            set status = :expiredStatus
+            set status = :expiredStatus,
+                expired_at = :now,
+                updated_at = :now
             where status = :activeStatus
               and expires_at <= :now
         """.trimIndent()
